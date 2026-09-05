@@ -1,0 +1,40 @@
+{
+  "execution_timestamp": "2026-09-05T03:39:05.527361+00:00",
+  "version": "2.1.0",
+  "frequency_gate": {
+    "winner": "Negative Binomial GLM",
+    "selected_gini": -0.8352312708036029,
+    "all_candidates": {
+      "Poisson GLM": {
+        "val_gini": -0.8353308311314347,
+        "aic": 261.60537474803476
+      },
+      "Negative Binomial GLM": {
+        "val_gini": -0.8352312708036029,
+        "aic": 260.80683612613274
+      },
+      "XGBoost Poisson": {
+        "val_gini": -0.8429320225799156,
+        "aic": NaN
+      }
+    }
+  },
+  "severity_gate": {
+    "winner": "Inverse Gaussian GLM",
+    "selected_gamma_deviance": 4.528730506503765,
+    "all_candidates": {
+      "Gamma GLM": {
+        "val_deviance": 4.801309747268631,
+        "val_mae": 642.1144233230065
+      },
+      "Log-Normal OLS": {
+        "val_deviance": 5.566112087977927,
+        "val_mae": 655.487285423871
+      },
+      "Inverse Gaussian GLM": {
+        "val_deviance": 4.528730506503765,
+        "val_mae": 631.3021393123328
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "mae": {
+    "Gamma GLM": 485.43775653452474,
+    "Log-Normal": 579.6218717092341,
+    "Inverse Gaussian GLM": 485.9555484613665
+  },
+  "rmse": {
+    "Gamma GLM": 801.1912088803355,
+    "Log-Normal": 834.4346044311533,
+    "Inverse Gaussian GLM": 801.2215639258433
+  },
+  "ae_ratio": {
+    "Gamma GLM": 1.0275613326447497,
+    "Log-Normal": 0.8549550844646263,
+    "Inverse Gaussian GLM": 1.0273884920287444
+  },
+  "gamma_deviance": {
+    "Gamma GLM": 684.5414594665589,
+    "Log-Normal": 713.5977030722609,
+    "Inverse Gaussian GLM": 684.5950118701252
+  },
+  "aic_equivalent": {
+    "Gamma GLM": 746.5414594665589,
+    "Log-Normal": 775.5977030722609,
+    "Inverse Gaussian GLM": 746.5950118701252
+  },
+  "best_model": "Gamma GLM",
+  "mean_pred_severity": 1117.9970652278369,
+  "n_train": 5201
+}

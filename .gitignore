@@ -1,0 +1,51 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
+# Large data files and model binaries (keep outputs clean)
+outputs/*.parquet
+outputs/*.pkl
+outputs/*.xlsx
+outputs/Pre-outputs/
+outputs/test_run/
+*.parquet
+*.pkl
+*.xlsx
+Pricing_Data.xlsx
+
+# Secret keys and local environment
+.env
+.streamlit/secrets.toml
+
+# SQLite databases
+*.db
+*.sqlite3
+warehouse.db
+outputs/anomaly_report.csv

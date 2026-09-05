@@ -1,0 +1,6 @@
+Cluster_ID,Segment_Size,Avg_Driver_Age,Avg_Vehicle_Value,Avg_Claim_Frequency,Primary_Region
+0,12450,42.5,22500,0.065,Urban
+1,8320,55.2,31000,0.042,Suburban
+2,4100,23.8,18500,0.145,Urban
+3,1850,68.1,15000,0.051,Rural
+4,320,28.4,65000,0.198,Urban

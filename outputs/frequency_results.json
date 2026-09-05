@@ -1,0 +1,28 @@
+{
+  "AIC": {
+    "Poisson GLM": 34330.77864326627,
+    "Negative Binomial GLM": 34327.06988680675,
+    "XGBoost": NaN
+  },
+  "Deviance": {
+    "Poisson GLM": 25944.207601477887,
+    "Negative Binomial GLM": 22693.293470082685,
+    "XGBoost": 8113.640320665454
+  },
+  "MAE": {
+    "Poisson GLM": 0.09450510858043412,
+    "Negative Binomial GLM": 0.0945084701746054,
+    "XGBoost": 0.16584707080575375
+  },
+  "RMSE": {
+    "Poisson GLM": 0.23062165329754963,
+    "Negative Binomial GLM": 0.23062185819779904,
+    "XGBoost": 0.2427155784181123
+  },
+  "Actuarial_Gini": {
+    "Poisson GLM": 0.1559694453325844,
+    "Negative Binomial GLM": 0.15614857401259608,
+    "XGBoost": 0.17488154538328304
+  },
+  "best_model": "Poisson GLM"
+}

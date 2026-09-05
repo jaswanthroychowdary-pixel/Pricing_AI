@@ -1,0 +1,26 @@
+{
+  "total_records": 111617,
+  "exposure_synthesized": true,
+  "total_exposure_years": 111617.0,
+  "total_observed_claims": 5651,
+  "portfolio_claim_frequency": 0.0506284884918964,
+  "total_claim_payout": 8493500.0,
+  "average_claim_severity": 1568.8031030661248,
+  "claim_nb_column_used": "ClaimNb",
+  "claim_amount_column_used": "ClaimAmount",
+  "exposure_column_used": "Exposure",
+  "num_cols": [
+    "CarAge",
+    "DriverAge",
+    "Density"
+  ],
+  "cat_cols": [
+    "Power",
+    "Brand",
+    "Gas",
+    "Region"
+  ],
+  "claim_count_col": "ClaimNb",
+  "claim_amount_col": "ClaimAmount",
+  "exposure_col": "Exposure"
+}

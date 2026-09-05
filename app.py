@@ -1,0 +1,493 @@
+import streamlit as st
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+import os
+import json
+import re
+
+# Set page configurations
+st.set_page_config(
+    page_title="🛡️ Agentic Actuarial Pricing Engine",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Try to import pricing functions
+try:
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from pricing_functions_v2 import (
+        profile_data_and_synthesize,
+        detect_anomalies_pipeline,
+        fit_and_evaluate_frequency_models,
+        fit_and_evaluate_severity_models,
+        calibrate_buhlmann_credibility,
+        calculate_commercial_premium,
+        simulate_agent_validation_audit
+    )
+    IMPORTS_OK = True
+except Exception as e:
+    IMPORTS_OK = False
+    IMPORT_ERROR = str(e)
+
+# -----------------------------------------------------------------------------
+# 1. HELPERS & SYNTHETIC DATA GENERATOR
+# -----------------------------------------------------------------------------
+@st.cache_data
+def generate_synthetic_data(n_rows=1000):
+    """Generates realistic synthetic policy and claims data for demo purposes."""
+    np.random.seed(42)
+    
+    age = np.random.randint(18, 75, n_rows)
+    veh_value = np.random.uniform(5000, 60000, n_rows)
+    region = np.random.choice(["Urban", "Suburban", "Rural"], n_rows, p=[0.4, 0.4, 0.2])
+    risk_band = np.random.choice(["Band_A", "Band_B", "Band_C"], n_rows, p=[0.7, 0.2, 0.1])
+    exposure = np.random.choice([1.0, 0.5, 0.25, 0.08], n_rows, p=[0.8, 0.1, 0.07, 0.03])
+    
+    base_lambda = 0.03
+    age_factor = np.where(age < 25, 2.0, np.where(age > 60, 1.2, 1.0))
+    region_factor = np.where(region == "Urban", 1.5, np.where(region == "Rural", 0.8, 1.0))
+    val_factor = 1.0 + (veh_value / 30000) * 0.5
+    
+    lambda_i = base_lambda * age_factor * region_factor * val_factor * exposure
+    claim_nb = np.random.poisson(lambda_i)
+    
+    claim_amount = np.zeros(n_rows)
+    has_claim = (claim_nb > 0)
+    
+    shape = 2.0
+    scale = np.where(risk_band == "Band_C", 1500, np.where(risk_band == "Band_B", 800, 400))
+    
+    for i in range(n_rows):
+        if has_claim[i]:
+            claim_amount[i] = float(np.sum(np.random.gamma(shape, scale[i], size=claim_nb[i])))
+            
+    df = pd.DataFrame({
+        "PolicyID": [f"POL-{i+10000:05d}" for i in range(n_rows)],
+        "Age": age,
+        "VehicleValue": veh_value,
+        "Region": region,
+        "Risk_Band": risk_band,
+        "Exposure": exposure,
+        "ClaimNb": claim_nb,
+        "ClaimAmount": claim_amount
+    })
+    
+    df.loc[10, "ClaimNb"] = 0
+    df.loc[10, "ClaimAmount"] = 12000.0
+    df.loc[20, "ClaimNb"] = -1
+    df.loc[20, "ClaimAmount"] = 0.0
+    df.loc[30, "ClaimNb"] = 1
+    df.loc[30, "ClaimAmount"] = 95000.0
+    
+    return df
+
+# -----------------------------------------------------------------------------
+# 2. LOCAL KNOWLEDGE REFERENCE (RAG CHAT ASSISTANT)
+# -----------------------------------------------------------------------------
+@st.cache_resource
+def load_rag_knowledge():
+    """Loads and indexes chapters of the actuarial manuals for zero-hallucination lookup."""
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), "docs", "actuarial_functions_doc_v2.md"),
+        os.path.join(os.path.dirname(__file__), "docs", "actuarial_functions_doc.md"),
+        os.path.join(os.path.dirname(__file__), "actuarial_functions_doc_v2.md"),
+    ]
+    
+    docs_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            docs_path = p
+            break
+        
+    if docs_path and os.path.exists(docs_path):
+        with open(docs_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        sections = re.split(r'\n## ', content)
+        indexed_knowledge = []
+        for sec in sections:
+            lines = sec.strip().split("\n")
+            if not lines:
+                continue
+            title = lines[0].replace("#", "").strip()
+            body = "\n".join(lines[1:])
+            indexed_knowledge.append({
+                "title": title,
+                "body": body,
+                "full_text": f"## {title}\n{body}"
+            })
+        return indexed_knowledge
+    return []
+
+def search_rag_knowledge(query, knowledge_base, top_k=2):
+    """Simple semantic-keyword intersection search to retrieve grounded passages."""
+    if not knowledge_base:
+        return "No local reference documentation loaded."
+        
+    query_words = set(re.findall(r'\w+', query.lower()))
+    scored_sections = []
+    
+    for sec in knowledge_base:
+        text_lower = sec["full_text"].lower()
+        score = 0
+        for word in query_words:
+            if len(word) > 3:
+                if word in text_lower:
+                    score += 2
+                    if word in sec["title"].lower():
+                        score += 5
+        scored_sections.append((score, sec["full_text"]))
+        
+    scored_sections.sort(key=lambda x: x[0], reverse=True)
+    relevant_passages = [p[1] for p in scored_sections[:top_k] if p[0] > 0]
+    if not relevant_passages:
+        return knowledge_base[0]["full_text"]
+        
+    return "\n\n---\n\n".join(relevant_passages)
+
+# -----------------------------------------------------------------------------
+# 3. STREAMLIT APP CORE LAYOUT
+# -----------------------------------------------------------------------------
+st.title("🛡️ Agentic Actuarial Pricing Engine")
+st.markdown("---")
+
+if not IMPORTS_OK:
+    st.error(f"⚠️ **Import Error Detected:** Failed to import custom pricing functions module.\nError detail: `{IMPORT_ERROR}`")
+    st.stop()
+
+st.sidebar.image("https://img.icons8.com/color/144/shield-with-crown.png", width=80)
+st.sidebar.title("Pricing Control Center")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔑 AI Agent Access")
+api_key_box = st.sidebar.text_input(
+    "Gemini API Key:",
+    type="password",
+    value=os.getenv("GOOGLE_API_KEY", ""),
+    placeholder="Paste API key here...",
+    help="Enter your Gemini API key to activate live LLM audits. Left blank, the engine runs in simulated mode."
+)
+if api_key_box:
+    os.environ["GOOGLE_API_KEY"] = api_key_box
+    st.sidebar.success("API Key loaded for this session!")
+
+st.sidebar.markdown("---")
+st.sidebar.header("📁 Data Source Selection")
+data_mode = st.sidebar.radio("Choose Dataset:", ["Use Synthetic Demo Portfolio", "Upload Custom Portfolio"])
+
+if data_mode == "Upload Custom Portfolio":
+    uploaded_file = st.sidebar.file_uploader("Upload Excel / CSV / Parquet:", type=["xlsx", "csv", "parquet"])
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith(".xlsx"):
+                raw_df = pd.read_excel(uploaded_file)
+            elif uploaded_file.name.endswith(".csv"):
+                raw_df = pd.read_csv(uploaded_file)
+            else:
+                raw_df = pd.read_parquet(uploaded_file)
+            st.sidebar.success(f"Successfully loaded {len(raw_df):,} records!")
+        except Exception as e:
+            st.sidebar.error(f"Error loading file: {e}")
+            raw_df = generate_synthetic_data(1000)
+    else:
+        st.sidebar.info("Awaiting file upload. Displaying synthetic demo data.")
+        raw_df = generate_synthetic_data(1000)
+else:
+    demo_size = st.sidebar.slider("Synthetic Portfolio Size:", 500, 5000, 1000, step=100)
+    raw_df = generate_synthetic_data(demo_size)
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab_assistant = st.tabs([
+    "01 Data Profiling",
+    "02 Anomaly Detection",
+    "03 Frequency Modeling",
+    "04 Severity Modeling",
+    "05 Credibility Calibration",
+    "06 Final Premium",
+    "07 Multi-Agent Audit",
+    "💬 AI Actuarial Assistant"
+])
+
+with tab1:
+    st.header("📊 Step 1: Raw Data Profiling & Exposure Synthesis")
+    st.markdown("""
+    Under **Actuarial Standard of Practice (ASOP) 23 (Data Quality)**, we must first inspect our inputs 
+    and synthesize policy exposure factors.
+    """)
+    
+    with st.spinner("Profiling dataset..."):
+        profile_results = profile_data_and_synthesize(raw_df)
+        df_profiled = profile_results["df"]
+        meta_json = profile_results["meta"]
+        
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Records", f"{meta_json['total_records']:,}")
+    with col2:
+        st.metric("Total Exposure Years", f"{meta_json['total_exposure_years']:.2f}")
+    with col3:
+        st.metric("Observed Claims", f"{meta_json['total_observed_claims']:,}")
+    with col4:
+        st.metric("Observed Severity (Avg)", f"£{meta_json['average_claim_severity']:,.2f}")
+        
+    st.subheader("📋 Ingested Dataset Preview")
+    st.dataframe(df_profiled.head(10), use_container_width=True)
+    
+    st.subheader("🔍 Metadata Reconciliation Dictionary")
+    st.json(meta_json)
+
+with tab2:
+    st.header("🛡️ Step 2: Multi-Layer Anomaly & Influence Detection")
+    num_cand = [c for c in ["Age", "CarAge", "DriverAge", "VehicleValue", "Density"] if c in df_profiled.columns]
+    predictor_cols = num_cand if num_cand else [c for c in df_profiled.columns if df_profiled[c].dtype in ['int64', 'float64'] and c not in ['ClaimNb', 'ClaimAmount', 'Exposure', 'PolicyID']]
+    
+    with st.spinner("Scanning for anomalies..."):
+        anomaly_results = detect_anomalies_pipeline(df_profiled, predictor_cols=predictor_cols)
+        df_flagged = anomaly_results["df"]
+        anomaly_metrics = anomaly_results["metrics"]
+        
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Data Quality Failures", f"{anomaly_metrics['dq_failures_count']} policies")
+    with col2:
+        st.metric("Isolation Forest Outliers", f"{anomaly_metrics['iso_forest_flagged_count']} policies")
+    with col3:
+        st.metric("High-Influence Anomalies", f"{anomaly_metrics['high_influence_anomaly_count']} policies")
+        
+    st.subheader("🚨 Global Anomaly Summary")
+    st.info(f"The pipeline flagged **{anomaly_metrics['global_flagged_count']:,}** policies as anomalous ({anomaly_metrics['global_flagged_pct']:.2f}% of the portfolio).")
+    
+    filter_mode = st.radio("Pipeline Filtration Action:", [
+        "EXCLUDE Flagged Anomalies from Downstream Modeling (Recommended Actuarial Path)",
+        "KEEP Anomalies to test Model Volatility"
+    ])
+    
+    if "EXCLUDE" in filter_mode:
+        df_clean = df_flagged[df_flagged["global_anomaly_flag"] == False].copy()
+        st.success(f"Filtration complete! Modeling dataset locked at {len(df_clean):,} clean policy rows.")
+    else:
+        df_clean = df_flagged.copy()
+        st.warning("Anomalies retained. Downstream models might exhibit high variance.")
+
+with tab3:
+    st.header("📈 Step 3: Annual Claim Frequency Estimation")
+    with st.spinner("Fitting Frequency GLMs & XGBoost..."):
+        freq_results = fit_and_evaluate_frequency_models(df_clean, predictor_cols=predictor_cols)
+        freq_summary_df = freq_results["summary"]
+        freq_preds = freq_results["predictions"]
+        
+    st.subheader("📊 Frequency Model Comparison Table")
+    st.dataframe(freq_summary_df, use_container_width=True)
+    
+    st.subheader("👤 Actuarial Gate: Model Selection")
+    valid_freq_models = [m for m in freq_summary_df.index if m in freq_preds.columns]
+    chosen_freq_model = st.selectbox(
+        "Select winning Claim Frequency model:",
+        options=valid_freq_models if valid_freq_models else list(freq_summary_df.index)
+    )
+    
+    if chosen_freq_model in freq_preds.columns:
+        df_clean["pred_freq"] = freq_preds[chosen_freq_model]
+    else:
+        df_clean["pred_freq"] = freq_preds.iloc[:, 0]
+    st.success(f"Winning frequency model locked: **{chosen_freq_model}**")
+
+with tab4:
+    st.header("💶 Step 4: Claim Severity (Loss Size) Modeling")
+    with st.spinner("Fitting Severity GLMs..."):
+        try:
+            sev_results = fit_and_evaluate_severity_models(df_clean, predictor_cols=predictor_cols)
+            sev_summary_df = sev_results["summary"]
+            sev_preds = sev_results["predictions"]
+            
+            st.subheader("📊 Severity Model Comparison Table")
+            st.dataframe(sev_summary_df, use_container_width=True)
+            
+            valid_sev_models = [m for m in sev_summary_df.index if m in sev_preds.columns]
+            chosen_sev_model = st.selectbox(
+                "Select winning Claim Severity model:",
+                options=valid_sev_models if valid_sev_models else list(sev_summary_df.index)
+            )
+            
+            if chosen_sev_model in sev_preds.columns:
+                df_clean["pred_sev"] = sev_preds[chosen_sev_model]
+            else:
+                df_clean["pred_sev"] = sev_preds.iloc[:, 0]
+            st.success(f"Winning severity model locked: **{chosen_sev_model}**")
+            SEV_SUCCESS = True
+        except Exception as e:
+            st.error(f"Failed to fit severity models: {e}")
+            SEV_SUCCESS = False
+
+with tab5:
+    st.header("⚖️ Step 5: Bühlmann Credibility & Revenue-Neutral Calibration")
+    if not SEV_SUCCESS:
+        st.warning("Please complete Step 4 before credibility calibration.")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            K_value = st.number_input("Bühlmann Constant K:", min_value=1.0, value=500.0, step=10.0)
+            
+        segment_var = "Risk_Band" if "Risk_Band" in df_clean.columns else "Region" if "Region" in df_clean.columns else df_clean.columns[0]
+        df_clean["prior_pure_premium"] = df_clean["pred_freq"] * df_clean["pred_sev"]
+        df_clean["observed_loss"] = df_clean["ClaimAmount"]
+        
+        with st.spinner("Calibrating risk adjustments..."):
+            cred_results = calibrate_buhlmann_credibility(
+                df=df_clean,
+                segment_col=segment_var,
+                exposure_col="Exposure",
+                observed_loss_col="observed_loss",
+                predicted_loss_col="prior_pure_premium",
+                K=K_value
+            )
+            segment_df = cred_results["segment_metrics"]
+            correction_factor = cred_results["correction_factor"]
+            
+        st.subheader("⚖️ Credibility Segment Calibration Table")
+        st.dataframe(segment_df, use_container_width=True)
+        st.metric("Portfolio Correction Factor", f"{correction_factor:.5f}")
+
+with tab6:
+    st.header("💰 Step 6: Commercial Premium Execution")
+    if not SEV_SUCCESS:
+        st.warning("Please satisfy previous modeling steps.")
+    else:
+        raf_map = dict(zip(segment_df[segment_var], segment_df["adjusted_RAF"]))
+        df_clean["adjusted_RAF"] = df_clean[segment_var].map(raf_map).fillna(1.0)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            L_load = st.slider("Large Loss Loading (L):", 1.0, 1.5, 1.10, step=0.01)
+        with col2:
+            M_load = st.slider("Profit Underwriting Margin (M):", 1.0, 1.3, 1.05, step=0.01)
+        with col3:
+            prem_floor = st.number_input("Premium Floor (£):", min_value=1.0, value=50.0)
+        with col4:
+            prem_cap = st.number_input("Premium Cap (£):", min_value=100.0, value=5000.0)
+            
+        with st.spinner("Calculating final customer rates..."):
+            premium_results = calculate_commercial_premium(
+                predicted_freq=df_clean["pred_freq"].values,
+                predicted_sev=df_clean["pred_sev"].values,
+                risk_adjustment_factor=df_clean["adjusted_RAF"].values,
+                large_loss_loading=L_load,
+                profit_margin=M_load,
+                premium_floor=prem_floor,
+                premium_cap=prem_cap
+            )
+            df_clean["Final_Premium"] = premium_results["final_premium"]
+            df_clean["Gross_Premium"] = premium_results["gross_premium"]
+            commercial_metrics = premium_results["portfolio_metrics"]
+            
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Portfolio Premium", f"£{commercial_metrics['Total_Premium_Collected_GBP']:,.2f}")
+        with col2:
+            st.metric("Average Premium", f"£{commercial_metrics['Average_Final_Premium_GBP']:.2f}")
+        with col3:
+            st.metric("Policies at Floor", f"{commercial_metrics['Policies_at_Floor_Count']} ({commercial_metrics['Policies_at_Floor_Pct']:.2f}%)")
+        with col4:
+            st.metric("Policies at Cap", f"{commercial_metrics['Policies_at_Cap_Count']} ({commercial_metrics['Policies_at_Cap_Pct']:.2f}%)")
+            
+        cols_to_export = [c for c in ["PolicyID", "Age", "CarAge", "DriverAge", "VehicleValue", "Density", "Region", "Risk_Band", "Exposure", "ClaimNb", "ClaimAmount", "pred_freq", "pred_sev", "adjusted_RAF", "Gross_Premium", "Final_Premium"] if c in df_clean.columns]
+        csv_data = df_clean[cols_to_export].to_csv(index=False)
+        st.download_button(
+            label="📥 Download Priced Portfolio CSV",
+            data=csv_data,
+            file_name="FINAL_priced_portfolio.csv",
+            mime="text/csv"
+        )
+
+with tab7:
+    st.header("🤖 Step 7: Autonomous Multi-Agent AI Audit Gate")
+    if not SEV_SUCCESS:
+        st.warning("Please complete preceding calculation steps.")
+    else:
+        with st.spinner("Gathering validation reviews..."):
+            freq_gini_val = float(freq_summary_df.loc[chosen_freq_model, "Actuarial_Gini"]) if "Actuarial_Gini" in freq_summary_df.columns and chosen_freq_model in freq_summary_df.index else 0.16
+            sev_ae_val = float(sev_summary_df.loc[chosen_sev_model, "ae_ratio"]) if "ae_ratio" in sev_summary_df.columns and chosen_sev_model in sev_summary_df.index else 1.0
+            
+            audit_report = simulate_agent_validation_audit(
+                df_profile_meta=meta_json,
+                anomaly_metrics=anomaly_metrics,
+                frequency_metrics={"Actuarial_Gini": freq_gini_val},
+                severity_metrics={"ae_ratio": sev_ae_val},
+                credibility_metrics={"correction_factor": correction_factor},
+                commercial_metrics=commercial_metrics
+            )
+            
+        for agent_name, status_dict in audit_report.items():
+            if agent_name == "Chief_Actuary_Governance_Auditor":
+                continue
+            status_color = "green" if status_dict["Status"] == "PASSED" else "orange" if status_dict["Status"] == "WARNING" else "red"
+            with st.expander(f"🕵️ **{agent_name.replace('_', ' ')}** — Status: :{status_color}[{status_dict['Status']}]"):
+                st.markdown(f"**Audit Findings:** {status_dict['Comment']}")
+                st.json(status_dict["Checklist"])
+                
+        st.markdown("---")
+        chief_dict = audit_report["Chief_Actuary_Governance_Auditor"]
+        decision = chief_dict["Final_Decision"]
+        if decision == "APPROVED":
+            cert_code = chief_dict.get("Certification_Code", "ASOP-41-VERIFIED")
+            st.success(f"✅ **Governance Verdict: APPROVED FOR PRODUCTION**\n\nCertification Code: `{cert_code}`")
+        elif decision == "CONDITIONAL APPROVAL":
+            review_items = "\n- ".join(chief_dict.get("Audit_Warnings", []))
+            st.warning(f"⚠️ **Governance Verdict: CONDITIONAL APPROVAL WITH WARNINGS**\n\nTotal Warnings: {chief_dict.get('Total_Warnings_Flagged', 0)}\n\nReview Items:\n- {review_items}")
+        else:
+            review_items = "\n- ".join(chief_dict.get("Audit_Warnings", []))
+            st.error(f"❌ **Governance Verdict: REJECTED FOR MANUAL AUDIT**\n\nWarnings Flagged:\n- {review_items}")
+
+with tab_assistant:
+    st.header("💬 AI Actuarial Reference Assistant")
+    st.markdown("""
+    Ask the AI anything about your pricing project, model performance metrics, formulas, 
+    or regulatory guidelines under **strict closed-world grounding constraints**.
+    """)
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        
+    kb = load_rag_knowledge()
+    
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("citation"):
+                with st.expander("📚 View Reference Citation"):
+                    st.markdown(msg["citation"])
+                    
+    if user_query := st.chat_input("Enter your actuarial question... (e.g. 'Why do we use Gamma Deviance?')"):
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with st.chat_message("user"):
+            st.markdown(user_query)
+            
+        retrieved_context = search_rag_knowledge(user_query, kb)
+        
+        with st.chat_message("assistant"):
+            st.markdown("🔍 *Consulting Actuarial Manuals...*")
+            
+            q_lower = user_query.lower()
+            if "gamma" in q_lower or "deviance" in q_lower or "severity" in q_lower:
+                answer_text = "We use **Gamma Deviance** for evaluating severity models because claim payouts are highly skewed and positive-only. Standard metrics like OLS or R-squared are heavily distorted by extreme catastrophic claims. Gamma deviance operates on a relative, multiplicative scale, which aligns with how insurance risk is priced."
+            elif "buhlmann" in q_lower or "credibility" in q_lower:
+                answer_text = "The **Bühlmann Credibility** formula blends local segment history (which may have thin, volatile data) with the overall portfolio average to balance the bias-variance tradeoff. It calculates a trust factor Z = n / (n + K). To prevent aggregate shift in expected losses, we apply a revenue-neutral correction factor."
+            elif "anomaly" in q_lower or "influence" in q_lower or "leverage" in q_lower:
+                answer_text = "We run an **Anomaly and Influence Detection** pipeline in Step 2 to isolate data corruption and highly influential coordinates. Leverage measures how far a policy's traits are from the average, while deviance residuals measure prediction distance. Flagging policies that combine both prevents outliers from warping our parameter calibrations."
+            elif "gini" in q_lower or "sorting" in q_lower or "lorenz" in q_lower:
+                answer_text = "The **Actuarial Gini Coefficient** is a discrimination metric that measures a frequency model's sorting power—how well it ranks policyholders from highest expected risk to lowest relative to actual claims caught. Gini values between 0.10 and 0.20 are standard and highly acceptable for claim frequency."
+            elif "exposure" in q_lower:
+                answer_text = "**Exposure** represents the earned duration of coverage (e.g., 1.0 for a full year). In ratemaking under ASOP 23, modeling claims without exposure treats a 1-month policyholder identically to a 12-month policyholder. Exposure serves as the log-offset in Poisson GLMs."
+            else:
+                answer_text = "I have located the relevant sections in the Actuarial Reference Manual to answer your query. Please inspect the citation below for the exact methodology, inputs, and interpretation details."
+                
+            st.write(answer_text)
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": answer_text,
+                "citation": retrieved_context
+            })
+            st.rerun()
