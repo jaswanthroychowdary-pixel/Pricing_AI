@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  pricing_engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: motor_pricing_engine_app
+    ports:
+      - "8501:8501"
+    volumes:
+      # Persist the local SQLite database across container restarts
+      - pricing_data_volume:/app/data
+    environment:
+      # Inject local configuration parameters and environment variables
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - DATABASE_PATH=/app/data/warehouse.db
+      - LARGE_LOSS_LOADING=1.10
+      - PROFIT_MARGIN=1.05
+      - PREMIUM_FLOOR=50.00
+      - PREMIUM_CAP=5000.00
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pricing_data_volume:
+    driver: local
