@@ -123,8 +123,8 @@ def load_rag_knowledge():
         return indexed_knowledge
     return []
 
-def search_rag_knowledge(query, knowledge_base, top_k=2):
-    """Simple semantic-keyword intersection search to retrieve grounded passages."""
+def search_rag_knowledge(query, knowledge_base, top_k=1):
+    """Retrieves concise, targeted actuarial manual passages without flooding raw text."""
     if not knowledge_base:
         return "No local reference documentation loaded."
         
@@ -138,16 +138,25 @@ def search_rag_knowledge(query, knowledge_base, top_k=2):
             if len(word) > 3:
                 if word in text_lower:
                     score += 2
-                    if word in sec["title"].lower():
-                        score += 5
-        scored_sections.append((score, sec["full_text"]))
+                if word in sec["title"].lower():
+                    score += 6
+        scored_sections.append((score, sec["title"], sec["body"]))
         
     scored_sections.sort(key=lambda x: x[0], reverse=True)
-    relevant_passages = [p[1] for p in scored_sections[:top_k] if p[0] > 0]
-    if not relevant_passages:
-        return knowledge_base[0]["full_text"]
+    
+    # Pick top relevant section
+    best_matches = [s for s in scored_sections if s[0] > 0]
+    if not best_matches:
+        best_matches = [scored_sections[0]]
         
-    return "\n\n---\n\n".join(relevant_passages)
+    formatted_passages = []
+    for score, title, body in best_matches[:top_k]:
+        # Extract the core introductory paragraphs (up to 500 chars)
+        paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
+        concise_body = "\n\n".join(paragraphs[:2]) if paragraphs else body[:400]
+        formatted_passages.append(f"### {title}\n{concise_body}")
+        
+    return "\n\n---\n\n".join(formatted_passages)
 
 # -----------------------------------------------------------------------------
 # 3. STREAMLIT APP CORE LAYOUT
@@ -444,23 +453,28 @@ with tab7:
 with tab_assistant:
     st.header("💬 AI Actuarial Reference Assistant")
     st.markdown("""
-    Ask the AI anything about your pricing project, model performance metrics, formulas, 
-    or regulatory guidelines under **strict closed-world grounding constraints**.
+    Ask the AI anything about your pricing engine, model selection, formulas, 
+    or regulatory guidelines under **strict closed-world grounding and provenance tracking**.
     """)
+    
+    # Check if API key is configured
+    active_api_key = os.getenv("GOOGLE_API_KEY", "").strip()
     
     if "messages" not in st.session_state:
         st.session_state.messages = []
         
     kb = load_rag_knowledge()
     
+    # Display message history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("citation"):
-                with st.expander("📚 View Reference Citation"):
+                with st.expander("📚 Actuarial Citation & Grounding"):
                     st.markdown(msg["citation"])
                     
-    if user_query := st.chat_input("Enter your actuarial question... (e.g. 'Why do we use Gamma Deviance?')"):
+    # Chat Input
+    if user_query := st.chat_input("Ask an actuarial question... (e.g. 'How was exposure determined?', 'Why Gamma deviance?')"):
         st.session_state.messages.append({"role": "user", "content": user_query})
         with st.chat_message("user"):
             st.markdown(user_query)
@@ -468,26 +482,86 @@ with tab_assistant:
         retrieved_context = search_rag_knowledge(user_query, kb)
         
         with st.chat_message("assistant"):
-            st.markdown("🔍 *Consulting Actuarial Manuals...*")
-            
-            q_lower = user_query.lower()
-            if "gamma" in q_lower or "deviance" in q_lower or "severity" in q_lower:
-                answer_text = "We use **Gamma Deviance** for evaluating severity models because claim payouts are highly skewed and positive-only. Standard metrics like OLS or R-squared are heavily distorted by extreme catastrophic claims. Gamma deviance operates on a relative, multiplicative scale, which aligns with how insurance risk is priced."
-            elif "buhlmann" in q_lower or "credibility" in q_lower:
-                answer_text = "The **Bühlmann Credibility** formula blends local segment history (which may have thin, volatile data) with the overall portfolio average to balance the bias-variance tradeoff. It calculates a trust factor Z = n / (n + K). To prevent aggregate shift in expected losses, we apply a revenue-neutral correction factor."
-            elif "anomaly" in q_lower or "influence" in q_lower or "leverage" in q_lower:
-                answer_text = "We run an **Anomaly and Influence Detection** pipeline in Step 2 to isolate data corruption and highly influential coordinates. Leverage measures how far a policy's traits are from the average, while deviance residuals measure prediction distance. Flagging policies that combine both prevents outliers from warping our parameter calibrations."
-            elif "gini" in q_lower or "sorting" in q_lower or "lorenz" in q_lower:
-                answer_text = "The **Actuarial Gini Coefficient** is a discrimination metric that measures a frequency model's sorting power—how well it ranks policyholders from highest expected risk to lowest relative to actual claims caught. Gini values between 0.10 and 0.20 are standard and highly acceptable for claim frequency."
-            elif "exposure" in q_lower:
-                answer_text = "**Exposure** represents the earned duration of coverage (e.g., 1.0 for a full year). In ratemaking under ASOP 23, modeling claims without exposure treats a 1-month policyholder identically to a 12-month policyholder. Exposure serves as the log-offset in Poisson GLMs."
-            else:
-                answer_text = "I have located the relevant sections in the Actuarial Reference Manual to answer your query. Please inspect the citation below for the exact methodology, inputs, and interpretation details."
+            # Check for API Key
+            if not active_api_key:
+                st.warning("⚠️ **Live AI Reasoning Offline**: No Gemini API key detected.")
+                st.info("👉 Please paste your Gemini API key into the **'🔑 AI Agent Access'** box in the left sidebar to activate live agent reasoning and tool synthesis.")
                 
-            st.write(answer_text)
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": answer_text,
-                "citation": retrieved_context
-            })
+                # Honest local fallback: Show retrieved reference excerpt directly without fake AI text
+                st.markdown("### 📖 Retrieved Reference Manual Section:")
+                st.markdown(retrieved_context)
+                
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": "⚠️ *API key not provided. Retrieved reference manual documentation shown below.*",
+                    "citation": retrieved_context
+                })
+            else:
+                with st.spinner("🤖 Consulting Actuarial Manuals & Auditing Pipeline State..."):
+                    try:
+                        import google.generativeai as genai
+                        genai.configure(api_key=active_api_key)
+                        
+                        # Build Grounding Facts from live pipeline state
+                        current_facts = {
+                            "total_records": meta_json.get("total_records", len(raw_df)),
+                            "total_exposure_years": meta_json.get("total_exposure_years", 0.0),
+                            "exposure_synthesized": meta_json.get("exposure_synthesized", False),
+                            "assumptions_log": meta_json.get("assumptions_log", [
+                                {
+                                    "parameter": "Exposure",
+                                    "provenance": "ACTUARIAL_ASSUMPTION" if meta_json.get("exposure_synthesized", False) else "DATASET_FACT",
+                                    "value": 1.0 if meta_json.get("exposure_synthesized", False) else "Sourced from data",
+                                    "justification": "Raw dataset lacked exposure column. Assumed 1.0 annual earned exposure per policy under ASOP 23 proxy ratemaking convention." if meta_json.get("exposure_synthesized", False) else "Found in raw data."
+                                }
+                            ]),
+                            "selected_frequency_model": chosen_freq_model,
+                            "selected_severity_model": chosen_sev_model,
+                            "large_loss_loading": l_loading,
+                            "profit_margin": p_margin,
+                            "premium_floor": p_floor,
+                            "premium_cap": p_cap,
+                            "buhlmann_correction_factor": correction_factor
+                        }
+                        
+                        system_prompt = f"""You are a senior, highly professional Actuarial AI Assistant embedded in a Motor Insurance Pricing Engine.
+Your users are credentialed pricing actuaries and underwriters.
+
+CRITICAL OPERATIONAL CONSTRAINTS:
+1. Answer in a direct, concise, professional tone (3 to 5 sentences maximum or a tight bullet list).
+2. MANDATORY PROVENANCE TAGGING:
+   - When discussing data fields, explicitly state whether they are a [DATASET FACT] (found in original raw data) or an [ACTUARIAL ASSUMPTION] (synthesized/imputed by the pipeline).
+   - If asked about Exposure, you MUST explicitly state that the raw dataset lacked an exposure column, so the pipeline assumed Exposure = 1.0 per policy under ASOP 23 ratemaking rules.
+3. NEVER hallucinate metrics. Use the provided Pipeline State and Reference Manual below.
+4. Do not dump entire paragraphs of reference text. Cite the relevant Section Title concisely.
+
+=== CURRENT PIPELINE RUNTIME FACTS ===
+{json.dumps(current_facts, indent=2)}
+
+=== ACTUARIAL REFERENCE MANUAL PASSAGES ===
+{retrieved_context}
+"""
+                        model = genai.GenerativeModel("gemini-1.5-flash")
+                        prompt = f"{system_prompt}\n\nActuary Question: {user_query}\n\nActuarial AI Response:"
+                        response = model.generate_content(prompt)
+                        answer_text = response.text
+                        
+                        st.markdown(answer_text)
+                        with st.expander("📚 Actuarial Citation & Grounding"):
+                            st.markdown(f"**Referenced Documentation Section:**\n\n{retrieved_context}")
+                            
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer_text,
+                            "citation": retrieved_context
+                        })
+                    except Exception as e:
+                        st.error(f"❌ Error communicating with Gemini API: {e}")
+                        st.info("Showing reference passage directly:")
+                        st.markdown(retrieved_context)
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": f"Error: {e}",
+                            "citation": retrieved_context
+                        })
             st.rerun()

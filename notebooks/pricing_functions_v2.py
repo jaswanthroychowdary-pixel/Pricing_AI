@@ -120,6 +120,21 @@ def profile_data_and_synthesize(
     total_loss_payout = float(df_clean[detected_amount].sum())
     avg_severity = total_loss_payout / len(positive_claims) if len(positive_claims) > 0 else 0.0
 
+    assumptions_log = []
+    if exposure_synthesized:
+        assumptions_log.append({
+            "parameter": "Exposure",
+            "provenance": "ACTUARIAL_ASSUMPTION",
+            "value": 1.0,
+            "justification": "Original dataset lacked exposure column. Assumed 1.0 annual earned exposure per policy under ASOP 23 ratemaking convention."
+        })
+    else:
+        assumptions_log.append({
+            "parameter": "Exposure",
+            "provenance": "DATASET_FACT",
+            "justification": f"Exposure was sourced directly from '{exposure_col}' column in the raw data."
+        })
+
     meta_dict = {
         "total_records": n_rows,
         "exposure_synthesized": bool(exposure_synthesized),
@@ -130,7 +145,8 @@ def profile_data_and_synthesize(
         "average_claim_severity": avg_severity,
         "claim_nb_column_used": detected_nb,
         "claim_amount_column_used": detected_amount,
-        "exposure_column_used": exposure_col
+        "exposure_column_used": exposure_col,
+        "assumptions_log": assumptions_log
     }
 
     return {

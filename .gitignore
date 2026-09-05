@@ -49,3 +49,5 @@ Pricing_Data.xlsx
 *.sqlite3
 warehouse.db
 outputs/anomaly_report.csv
+.agents/
+.claude/
