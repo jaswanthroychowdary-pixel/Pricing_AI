@@ -422,9 +422,46 @@ with tab3:
             segment_df = cred_results["segment_metrics"]
             correction_factor = cred_results["correction_factor"]
             
-        st.dataframe(segment_df, use_container_width=True)
-        st.metric("Portfolio Revenue-Neutral Correction Factor", f"{correction_factor:.5f}")
+        st.markdown("""
+        **Bühlmann Credibility** solves a critical actuarial problem: *How much should we trust a region's actual past claims versus the wider portfolio average?*
+        - Large regions (e.g. **Centre** with 58,576 policies) have high credibility ($Z \approx 99\%$) because their sample size is massive.
+        - Small regions (e.g. **Limousin** with 962 policies) have lower credibility ($Z \approx 66\%$) to protect policyholders from random statistical spikes.
+        """)
         
+        display_cred_df = segment_df[[
+            segment_var, "exposure", "observed_loss", "predicted_loss",
+            "credibility_Z", "observed_pure_premium", "adjusted_RAF", "adjusted_credibility_pure_premium"
+        ]].copy().rename(columns={
+            segment_var: "Territory / Segment",
+            "exposure": "Exposure (Years)",
+            "observed_loss": "Actual Losses (£)",
+            "predicted_loss": "Model Expected (£)",
+            "credibility_Z": "Credibility (Z)",
+            "observed_pure_premium": "Actual Cost/Policy (£)",
+            "adjusted_RAF": "Risk Multiplier (RAF)",
+            "adjusted_credibility_pure_premium": "Final Credibility Rate (£)"
+        })
+        
+        display_cred_df["Exposure (Years)"] = display_cred_df["Exposure (Years)"].apply(lambda x: f"{x:,.0f}")
+        display_cred_df["Actual Losses (£)"] = display_cred_df["Actual Losses (£)"].apply(lambda x: f"£{x:,.0f}")
+        display_cred_df["Model Expected (£)"] = display_cred_df["Model Expected (£)"].apply(lambda x: f"£{x:,.0f}")
+        display_cred_df["Credibility (Z)"] = display_cred_df["Credibility (Z)"].apply(lambda x: f"{x*100:.1f}%")
+        display_cred_df["Actual Cost/Policy (£)"] = display_cred_df["Actual Cost/Policy (£)"].apply(lambda x: f"£{x:.2f}")
+        display_cred_df["Risk Multiplier (RAF)"] = display_cred_df["Risk Multiplier (RAF)"].apply(lambda x: f"{x:.4f}")
+        display_cred_df["Final Credibility Rate (£)"] = display_cred_df["Final Credibility Rate (£)"].apply(lambda x: f"£{x:.2f}")
+        
+        st.dataframe(display_cred_df, use_container_width=True)
+        
+        col_m1, col_m2 = st.columns([1, 2])
+        with col_m1:
+            st.metric(
+                "Portfolio Revenue-Neutral Factor", 
+                f"{correction_factor:.5f}",
+                help="Multiplied across all rates to ensure total portfolio premiums exactly match target revenue after credibility blending."
+            )
+        with col_m2:
+            st.info(f"⚖️ Blending formula: **Rate = Z × (Region's Past Losses) + (1 - Z) × (National Benchmark)**. All 10 regions adjusted with factor **{correction_factor:.5f}** to preserve revenue neutrality.")
+            
         raf_map = dict(zip(segment_df[segment_var], segment_df["adjusted_RAF"]))
         df_clean["adjusted_RAF"] = df_clean[segment_var].map(raf_map).fillna(1.0)
         
