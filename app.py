@@ -179,17 +179,23 @@ st.sidebar.subheader("🔑 AI Agent Access")
 api_key_box = st.sidebar.text_input(
     "Gemini API Key:",
     type="password",
-    value=os.getenv("GOOGLE_API_KEY", ""),
+    value=st.session_state.get("gemini_api_key", ""),
     placeholder="Paste API key here...",
     help="Enter your Gemini API key to activate live LLM audits. Left blank, the engine runs in simulated mode."
 )
 if api_key_box:
-    os.environ["GOOGLE_API_KEY"] = api_key_box
+    st.session_state["gemini_api_key"] = api_key_box.strip()
     st.sidebar.success("API Key loaded for this session!")
 
 st.sidebar.markdown("---")
 st.sidebar.header("📁 Data Source Selection")
-data_mode = st.sidebar.radio("Choose Dataset:", ["Use Synthetic Demo Portfolio", "Upload Custom Portfolio"])
+data_mode = st.sidebar.radio(
+    "Choose Dataset:",
+    ["None (Awaiting Selection)", "Upload Custom Portfolio", "Generate Synthetic Demo Portfolio"],
+    index=0
+)
+
+raw_df = None
 
 if data_mode == "Upload Custom Portfolio":
     uploaded_file = st.sidebar.file_uploader("Upload Excel / CSV / Parquet:", type=["xlsx", "csv", "parquet"])
@@ -204,13 +210,49 @@ if data_mode == "Upload Custom Portfolio":
             st.sidebar.success(f"Successfully loaded {len(raw_df):,} records!")
         except Exception as e:
             st.sidebar.error(f"Error loading file: {e}")
-            raw_df = generate_synthetic_data(1000)
+            raw_df = None
     else:
-        st.sidebar.info("Awaiting file upload. Displaying synthetic demo data.")
-        raw_df = generate_synthetic_data(1000)
-else:
+        st.sidebar.info("Awaiting file upload...")
+elif data_mode == "Generate Synthetic Demo Portfolio":
     demo_size = st.sidebar.slider("Synthetic Portfolio Size:", 500, 5000, 1000, step=100)
     raw_df = generate_synthetic_data(demo_size)
+    st.sidebar.success(f"Generated {len(raw_df):,} synthetic policies!")
+
+# If no data has been selected or uploaded, show the clean Landing / Start Screen
+if raw_df is None:
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%); border-radius: 12px; padding: 2.2rem; border: 1px solid #334155; margin-bottom: 2rem;">
+        <h2 style="color: #F8FAFC; margin-top: 0; font-size: 1.9rem;">🛡️ Actuarial Pricing Control Center</h2>
+        <p style="color: #94A3B8; font-size: 1.05rem; line-height: 1.6; margin-bottom: 0;">
+            A clean session has been initialized. To begin auditing, rate-making, and multi-agent validation, please select or provide a policy portfolio in the left sidebar.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("""
+        ### 1️⃣ Ingest & Audit
+        - Select **Generate Synthetic Demo Portfolio** to simulate 1,000+ motor policies.
+        - Or choose **Upload Custom Portfolio** (CSV, Excel, Parquet).
+        - Multi-layer anomaly detection & ASOP 23 exposure verification run automatically upon ingestion.
+        """)
+    with col2:
+        st.markdown("""
+        ### 2️⃣ Pricing & Credibility
+        - Dual **Frequency (Poisson) & Severity (Gamma)** generalized linear models.
+        - **Bühlmann Empirical Bayes** credibility weighting.
+        - Commercial tariff engine with profit margin and large-loss loading controls.
+        """)
+    with col3:
+        st.markdown("""
+        ### 3️⃣ Multi-Agent Governance
+        - **5 Autonomous Validation Agents**: Data, Statistical, Financial, Underwriting, and Chief Actuary.
+        - Grounded **AI Actuarial Assistant** (Gemini LLM) tracking data provenance facts vs assumptions.
+        """)
+        
+    st.info("👈 **To Start:** Choose a dataset option from the sidebar on the left.")
+    st.stop()
 
 # Consolidated 5-Tab Executive Workflow
 tab1, tab2, tab3, tab4, tab_assistant = st.tabs([
@@ -472,7 +514,7 @@ with tab_assistant:
     """)
     
     # Check if API key is configured
-    active_api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    active_api_key = st.session_state.get("gemini_api_key", "").strip()
     
     if "messages" not in st.session_state:
         st.session_state.messages = []
