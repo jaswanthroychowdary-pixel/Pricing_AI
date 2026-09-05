@@ -296,8 +296,14 @@ with tab1:
     
     # B. Multi-Layer Anomaly & Influence Filtration
     st.subheader("🛡️ Multi-Layer Anomaly & Influence Filtration")
-    num_cand = [c for c in ["Age", "CarAge", "DriverAge", "VehicleValue", "Density", "CarVal", "Power"] if c in df_profiled.columns]
-    predictor_cols = num_cand if num_cand else [c for c in df_profiled.columns if df_profiled[c].dtype in ['int64', 'float64'] and c not in ['ClaimNb', 'ClaimAmount', 'Exposure', 'PolicyID']]
+    
+    # Identify candidate rating features (excluding targets, IDs, and exposure)
+    exclude_cols = ['ClaimNb', 'ClaimAmount', 'Exposure', 'PolicyID', 'IDpol', 'ID', 'Unnamed: 0', 
+                    'dq_flag', 'iso_score', 'iso_outlier_flag', 'influence_flag', 'global_anomaly_flag']
+    all_cand = [c for c in df_profiled.columns if c not in exclude_cols]
+    common_risk_names = ["CarAge", "DriverAge", "Density", "Power", "Gas", "Brand", "Region", "Age", "VehicleValue", "CarVal"]
+    default_features = [c for c in common_risk_names if c in all_cand]
+    predictor_cols = default_features if default_features else all_cand[:5]
     
     with st.spinner("Executing multi-layer anomaly detection..."):
         anomaly_results = detect_anomalies_pipeline(df_profiled, predictor_cols=predictor_cols)
@@ -340,17 +346,18 @@ with tab2:
             freq_results = fit_and_evaluate_frequency_models(df_clean, predictor_cols=predictor_cols)
             freq_summary_df = freq_results["summary"]
             freq_preds = freq_results["predictions"]
+            full_freq_preds = freq_results.get("full_predictions", freq_preds)
             
         st.dataframe(freq_summary_df, use_container_width=True)
-        valid_freq_models = [m for m in freq_summary_df.index if m in freq_preds.columns]
+        valid_freq_models = [m for m in freq_summary_df.index if m in full_freq_preds.columns]
         chosen_freq_model = st.selectbox(
             "Select winning Frequency model:",
             options=valid_freq_models if valid_freq_models else list(freq_summary_df.index)
         )
-        if chosen_freq_model in freq_preds.columns:
-            df_clean["pred_freq"] = freq_preds[chosen_freq_model]
+        if chosen_freq_model in full_freq_preds.columns:
+            df_clean["pred_freq"] = full_freq_preds[chosen_freq_model]
         else:
-            df_clean["pred_freq"] = freq_preds.iloc[:, 0]
+            df_clean["pred_freq"] = full_freq_preds.iloc[:, 0]
         st.success(f"Locked Frequency Model: **{chosen_freq_model}**")
 
     # Right Column: Severity Modeling
@@ -361,17 +368,18 @@ with tab2:
                 sev_results = fit_and_evaluate_severity_models(df_clean, predictor_cols=predictor_cols)
                 sev_summary_df = sev_results["summary"]
                 sev_preds = sev_results["predictions"]
+                full_sev_preds = sev_results.get("full_predictions", sev_preds)
                 
                 st.dataframe(sev_summary_df, use_container_width=True)
-                valid_sev_models = [m for m in sev_summary_df.index if m in sev_preds.columns]
+                valid_sev_models = [m for m in sev_summary_df.index if m in full_sev_preds.columns]
                 chosen_sev_model = st.selectbox(
                     "Select winning Severity model:",
                     options=valid_sev_models if valid_sev_models else list(sev_summary_df.index)
                 )
-                if chosen_sev_model in sev_preds.columns:
-                    df_clean["pred_sev"] = sev_preds[chosen_sev_model]
+                if chosen_sev_model in full_sev_preds.columns:
+                    df_clean["pred_sev"] = full_sev_preds[chosen_sev_model]
                 else:
-                    df_clean["pred_sev"] = sev_preds.iloc[:, 0]
+                    df_clean["pred_sev"] = full_sev_preds.iloc[:, 0]
                 st.success(f"Locked Severity Model: **{chosen_sev_model}**")
                 SEV_SUCCESS = True
             except Exception as e:

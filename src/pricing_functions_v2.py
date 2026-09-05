@@ -24,6 +24,47 @@ import xgboost as xgb
 
 
 # =====================================================================================
+# 0. ROBUST NUMERIC & CATEGORICAL FEATURE ENCODING
+# =====================================================================================
+
+def encode_features_matrix(
+    df: pd.DataFrame, 
+    feature_cols: List[str]
+) -> Tuple[pd.DataFrame, np.ndarray]:
+    """
+    Safely encodes candidate features into a purely numeric matrix (float64).
+    Automatically:
+    - Preserves already numeric columns.
+    - Strips currency/formatting symbols and parses numeric strings.
+    - Encodes categorical/string variables (e.g., Power 'h', Gas, Region, Brand) using ordered categorical integer codes.
+    - Fills missing values with column medians (or 0).
+    - Prevents string-to-float casting errors across scikit-learn and statsmodels.
+    """
+    X_df = pd.DataFrame(index=df.index)
+    for col in feature_cols:
+        if col not in df.columns:
+            continue
+        s = df[col]
+        if pd.api.types.is_numeric_dtype(s):
+            X_df[col] = pd.to_numeric(s, errors="coerce").fillna(0.0)
+        else:
+            # Check if formatted numeric strings
+            s_cleaned = s.astype(str).str.replace(",", "").str.replace("£", "").str.replace("$", "").str.strip()
+            converted = pd.to_numeric(s_cleaned, errors="coerce")
+            if converted.notna().sum() > 0.8 * len(converted):
+                X_df[col] = converted.fillna(converted.median() if converted.notna().any() else 0.0)
+            else:
+                # String / Categorical column (e.g. Power 'd'..'o', Gas, Brand, Region)
+                cats = pd.Categorical(s.astype(str))
+                X_df[col] = cats.codes.astype(float)
+                
+    if X_df.empty or X_df.shape[1] == 0:
+        X_df["intercept"] = 1.0
+        
+    return X_df, X_df.values.astype(float)
+
+
+# =====================================================================================
 # 1. DATA PROFILING & EXPOSURE SYNTHESIS (01_Data_Profiling.ipynb)
 # =====================================================================================
 
@@ -334,15 +375,15 @@ def detect_anomalies_pipeline(
     p999 = df_flagged[claim_amount_col].quantile(0.999)
     df_flagged["tail_outlier_flag"] = df_flagged[claim_amount_col] > p999
 
-    # 3. Isolation Forest
-    X_preds = df_flagged[predictor_cols].fillna(0).values
-    iso = IsolationForest(contamination=contamination_rate, random_state=42)
+    # 3. Isolation Forest with robust numeric encoding
+    _, X_preds = encode_features_matrix(df_flagged, predictor_cols)
+    iso = IsolationForest(contamination=contamination_rate, random_state=42, n_jobs=-1)
     df_flagged["iso_score"] = iso.fit_predict(X_preds)
     df_flagged["iso_outlier_flag"] = df_flagged["iso_score"] == -1
 
     # 4. Leverage Influence Check
     y = df_flagged[claim_nb_col].values
-    X_design = sm.add_constant(df_flagged[predictor_cols].fillna(0).values)
+    X_design = sm.add_constant(X_preds)
     
     try:
         baseline_model = sm.GLM(y, X_design, family=sm.families.Poisson()).fit()
@@ -439,27 +480,34 @@ def fit_and_evaluate_frequency_models(
     """
     Splits data into train and validation sets, fits Poisson GLM, Negative Binomial GLM,
     and XGBoost (Poisson objective), and evaluates standard metrics alongside Actuarial Gini.
+    Returns validation set predictions and portfolio-wide predictions.
     """
     df_clean = df.copy()
     
-    train_df, val_df = train_test_split(df_clean, test_size=0.2, random_state=42)
+    _, X_all = encode_features_matrix(df_clean, predictor_cols)
+    X_all_sm = sm.add_constant(X_all)
     
-    X_train = train_df[predictor_cols].fillna(0).values
-    X_val = val_df[predictor_cols].fillna(0).values
+    train_idx, val_idx = train_test_split(df_clean.index, test_size=0.2, random_state=42)
+    loc_train = df_clean.index.get_indexer(train_idx)
+    loc_val = df_clean.index.get_indexer(val_idx)
     
-    X_train_sm = sm.add_constant(X_train)
-    X_val_sm = sm.add_constant(X_val)
+    X_train = X_all[loc_train]
+    X_val = X_all[loc_val]
+    X_train_sm = X_all_sm[loc_train]
+    X_val_sm = X_all_sm[loc_val]
     
-    y_train = train_df[claim_nb_col].values
-    y_val = val_df[claim_nb_col].values
+    y_train = df_clean.loc[train_idx, claim_nb_col].values
+    y_val = df_clean.loc[val_idx, claim_nb_col].values
     
-    exp_train = train_df[exposure_col].values
-    exp_val = val_df[exposure_col].values
+    exp_train = df_clean.loc[train_idx, exposure_col].values
+    exp_val = df_clean.loc[val_idx, exposure_col].values
 
     results = {}
-    predictions = pd.DataFrame(index=val_df.index)
+    predictions = pd.DataFrame(index=val_idx)
     predictions["actual_claims"] = y_val
     predictions["exposure"] = exp_val
+    
+    full_predictions = pd.DataFrame(index=df_clean.index)
 
     # 1. Poisson GLM
     try:
@@ -472,6 +520,9 @@ def fit_and_evaluate_frequency_models(
         
         pred_poisson = poisson_model.predict(X_val_sm)
         predictions["Poisson_GLM"] = pred_poisson
+        pred_poisson_all = poisson_model.predict(X_all_sm)
+        full_predictions["Poisson GLM"] = pred_poisson_all
+        full_predictions["Poisson_GLM"] = pred_poisson_all
         
         mae = np.mean(np.abs(y_val - pred_poisson))
         rmse = np.sqrt(np.mean((y_val - pred_poisson)**2))
@@ -498,6 +549,9 @@ def fit_and_evaluate_frequency_models(
         
         pred_nb = nb_model.predict(X_val_sm)
         predictions["NegBinomial_GLM"] = pred_nb
+        pred_nb_all = nb_model.predict(X_all_sm)
+        full_predictions["Negative Binomial GLM"] = pred_nb_all
+        full_predictions["NegBinomial_GLM"] = pred_nb_all
         
         mae = np.mean(np.abs(y_val - pred_nb))
         rmse = np.sqrt(np.mean((y_val - pred_nb)**2))
@@ -533,6 +587,10 @@ def fit_and_evaluate_frequency_models(
         
         pred_xgb = xgb_model.predict(X_val, base_margin=base_margin_val)
         predictions["XGBoost_Poisson"] = pred_xgb
+        base_margin_all = np.log(df_clean[exposure_col].values)
+        pred_xgb_all = xgb_model.predict(X_all, base_margin=base_margin_all)
+        full_predictions["XGBoost"] = pred_xgb_all
+        full_predictions["XGBoost_Poisson"] = pred_xgb_all
         
         mae = np.mean(np.abs(y_val - pred_xgb))
         rmse = np.sqrt(np.mean((y_val - pred_xgb)**2))
@@ -559,7 +617,8 @@ def fit_and_evaluate_frequency_models(
 
     return {
         "summary": summary_df,
-        "predictions": predictions
+        "predictions": predictions,
+        "full_predictions": full_predictions
     }
 
 
@@ -610,27 +669,36 @@ def fit_and_evaluate_severity_models(
 ) -> Dict[str, Union[pd.DataFrame, Dict[str, Dict[str, float]], pd.DataFrame]]:
     """
     Filters positive claims, splits 80/20, fits Gamma GLM, Log-Normal, and Inverse Gaussian GLM,
-    and returns summaries and validation prediction tables.
+    and returns summaries, validation prediction tables, and full-portfolio predicted severities.
     """
     pos_claims = df[df[claim_amount_col] > 0].copy()
     
     if len(pos_claims) < 10:
         raise ValueError("Insufficient claims data (less than 10 positive rows) to fit severity models.")
         
-    train_df, val_df = train_test_split(pos_claims, test_size=0.2, random_state=42)
+    _, X_all = encode_features_matrix(df, predictor_cols)
+    X_all_sm = sm.add_constant(X_all)
     
-    X_train = train_df[predictor_cols].fillna(0).values
-    X_val = val_df[predictor_cols].fillna(0).values
+    pos_indices = df.index.get_indexer(pos_claims.index)
+    X_pos = X_all[pos_indices]
+    X_pos_sm = X_all_sm[pos_indices]
     
-    X_train_sm = sm.add_constant(X_train)
-    X_val_sm = sm.add_constant(X_val)
+    train_idx, val_idx = train_test_split(pos_claims.index, test_size=0.2, random_state=42)
+    loc_train = pos_claims.index.get_indexer(train_idx)
+    loc_val = pos_claims.index.get_indexer(val_idx)
     
-    y_train = train_df[claim_amount_col].values
-    y_val = val_df[claim_amount_col].values
+    X_train = X_pos[loc_train]
+    X_val = X_pos[loc_val]
+    X_train_sm = X_pos_sm[loc_train]
+    X_val_sm = X_pos_sm[loc_val]
+    
+    y_train = pos_claims.loc[train_idx, claim_amount_col].values
+    y_val = pos_claims.loc[val_idx, claim_amount_col].values
 
     results = {}
-    predictions = pd.DataFrame(index=val_df.index)
+    predictions = pd.DataFrame(index=val_idx)
     predictions["actual_severity"] = y_val
+    full_predictions = pd.DataFrame(index=df.index)
 
     # 1. Gamma GLM (log link)
     try:
@@ -642,6 +710,9 @@ def fit_and_evaluate_severity_models(
         
         pred_gamma = gamma_model.predict(X_val_sm)
         predictions["Gamma_GLM"] = pred_gamma
+        pred_gamma_all = gamma_model.predict(X_all_sm)
+        full_predictions["Gamma GLM"] = pred_gamma_all
+        full_predictions["Gamma_GLM"] = pred_gamma_all
         
         eval_metrics = evaluate_severity_model(y_val, pred_gamma, num_parameters=X_train_sm.shape[1])
         results["Gamma GLM"] = eval_metrics
@@ -657,6 +728,8 @@ def fit_and_evaluate_severity_models(
         residual_variance = np.var(log_y_train - ln_model.predict(X_train_sm))
         pred_ln = np.exp(pred_log + residual_variance / 2.0)
         predictions["Log-Normal"] = pred_ln
+        pred_ln_all = np.exp(ln_model.predict(X_all_sm) + residual_variance / 2.0)
+        full_predictions["Log-Normal"] = pred_ln_all
         
         eval_metrics = evaluate_severity_model(y_val, pred_ln, num_parameters=X_train_sm.shape[1])
         results["Log-Normal"] = eval_metrics
@@ -673,6 +746,9 @@ def fit_and_evaluate_severity_models(
         
         pred_ig = ig_model.predict(X_val_sm)
         predictions["InverseGaussian_GLM"] = pred_ig
+        pred_ig_all = ig_model.predict(X_all_sm)
+        full_predictions["Inverse Gaussian GLM"] = pred_ig_all
+        full_predictions["InverseGaussian_GLM"] = pred_ig_all
         
         eval_metrics = evaluate_severity_model(y_val, pred_ig, num_parameters=X_train_sm.shape[1])
         results["Inverse Gaussian GLM"] = eval_metrics
@@ -683,7 +759,8 @@ def fit_and_evaluate_severity_models(
 
     return {
         "summary": summary_df,
-        "predictions": predictions
+        "predictions": predictions,
+        "full_predictions": full_predictions
     }
 
 
